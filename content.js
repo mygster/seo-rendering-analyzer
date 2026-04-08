@@ -4,8 +4,9 @@
 //   SSR/SSG — fandtes i rå HTML  → grønt overlay
 //   CSR     — kun efter JS-kørsel → orange overlay
 
-const STYLE_ID = "seo-render-style";
-const ATTR     = "data-seo-render";
+const STYLE_ID  = "seo-render-style";
+const ATTR      = "data-seo-render";
+const ATTR_SCRIPT = "data-seo-script";
 const SELECTORS = "h1, h2, h3, h4, h5, h6, p, img, nav, header, footer, main, section, article";
 
 // ---------- Hjælpefunktioner ----------
@@ -28,6 +29,26 @@ function extractSrcs(doc) {
   return srcs;
 }
 
+function extractScriptSrcs(doc) {
+  const srcs = new Set();
+  doc.querySelectorAll("script[src]").forEach(s => {
+    const src = s.getAttribute("src");
+    if (src) srcs.add(src);
+  });
+  return srcs;
+}
+
+function scriptFilename(src) {
+  try {
+    const pathname = new URL(src, location.href).pathname;
+    const name = pathname.split("/").pop() || src;
+    return name.length > 40 ? name.slice(0, 37) + "…" : name;
+  } catch {
+    const name = src.split("/").pop() || src;
+    return name.length > 40 ? name.slice(0, 37) + "…" : name;
+  }
+}
+
 function injectStyles() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
@@ -43,6 +64,23 @@ function injectStyles() {
       background-color: rgba(249, 115, 22, 0.07) !important;
       position: relative;
     }
+    [${ATTR}="csr"][${ATTR_SCRIPT}]::after {
+      content: attr(${ATTR_SCRIPT});
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: rgba(234, 88, 12, 0.92);
+      color: #fff;
+      font-size: 9px;
+      font-family: ui-monospace, monospace;
+      font-weight: 600;
+      line-height: 1;
+      padding: 2px 5px 3px;
+      border-radius: 0 0 4px 0;
+      white-space: nowrap;
+      z-index: 2147483647;
+      pointer-events: none;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -50,17 +88,30 @@ function injectStyles() {
 function removeOverlays() {
   const style = document.getElementById(STYLE_ID);
   if (style) style.remove();
-  document.querySelectorAll(`[${ATTR}]`).forEach(el => el.removeAttribute(ATTR));
+  document.querySelectorAll(`[${ATTR}]`).forEach(el => {
+    el.removeAttribute(ATTR);
+    el.removeAttribute(ATTR_SCRIPT);
+  });
 }
 
 // ---------- Analyse ----------
 
 function analyzeElements(rawHtml) {
-  const parser  = new DOMParser();
-  const rawDoc  = parser.parseFromString(rawHtml, "text/html");
+  const parser   = new DOMParser();
+  const rawDoc   = parser.parseFromString(rawHtml, "text/html");
   const rawTexts = extractTexts(rawDoc);
   const rawSrcs  = extractSrcs(rawDoc);
   const rawSrcsArr = [...rawSrcs];
+
+  // Find scripts der kun findes i live DOM (= JS-injekterede)
+  const rawScriptSrcs = extractScriptSrcs(rawDoc);
+  const csrScriptLabel = [...document.querySelectorAll("script[src]")]
+    .map(s => s.getAttribute("src"))
+    .filter(src => src && !rawScriptSrcs.has(src))
+    .map(scriptFilename)
+    .filter((v, i, a) => a.indexOf(v) === i) // unikke
+    .slice(0, 3)
+    .join(", ") || null;
 
   let ssrCount = 0, csrCount = 0;
 
@@ -79,8 +130,14 @@ function analyzeElements(rawHtml) {
               [...rawTexts].some(rt => rt.includes(content) || content.includes(rt));
     }
 
-    el.setAttribute(ATTR, inRaw ? "ssr" : "csr");
-    if (inRaw) ssrCount++; else csrCount++;
+    if (inRaw) {
+      el.setAttribute(ATTR, "ssr");
+      ssrCount++;
+    } else {
+      el.setAttribute(ATTR, "csr");
+      if (csrScriptLabel) el.setAttribute(ATTR_SCRIPT, csrScriptLabel);
+      csrCount++;
+    }
   });
 
   const total    = ssrCount + csrCount;
